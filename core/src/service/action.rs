@@ -215,7 +215,7 @@ impl Handler<RunAction> for ServiceActor {
                 json!({
                     "input": input,
                 }),
-                Some(Duration::from_secs(30)),
+                Some(Duration::from_secs(120)),
             )
             .await
             .with_kind(ErrorKind::Action)?;
