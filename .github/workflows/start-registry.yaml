@@ -82,6 +82,7 @@ jobs:
         with:
           name: start-registry_${{ matrix.arch }}.deb
           path: results/start-registry-*_${{ matrix.arch }}.deb
+          retention-days: 14
 
   create-image:
     name: Create Docker Image

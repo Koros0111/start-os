@@ -82,3 +82,4 @@ jobs:
         with:
           name: start-tunnel_${{ matrix.arch }}.deb
           path: results/start-tunnel-*_${{ matrix.arch }}.deb
+          retention-days: 14
