@@ -1,15 +1,6 @@
-# SDK — TypeScript Service Packaging
+# CLAUDE.md
 
-TypeScript SDK for packaging services for StartOS (`@start9labs/start-sdk`).
+## Operating rules
 
-## Structure
-
-- `base/` — Core types, ABI definitions, effects interface (`@start9labs/start-sdk-base`)
-- `package/` — Full SDK for package developers, re-exports base
-
-## Releasing
-
-When bumping the SDK version (in `package/package.json`), always update `CHANGELOG.md`:
-1. Add a new version heading at the top of the file
-2. Use the format: `## <sdk-version> — StartOS <os-version> (<date>)`
-3. Categorize entries under `### Added`, `### Changed`, `### Fixed`, or `### Removed`
+- **Bumping the SDK version requires a `CHANGELOG.md` entry.** When changing `package/package.json`'s version, add a heading at the top of `CHANGELOG.md` in the form `## <sdk-version> — StartOS <os-version> (<date>)` and categorize entries under `### Added`, `### Changed`, `### Fixed`, or `### Removed`. Don't skip this — releases without a changelog entry get caught in review.
+- **Web and container-runtime consume the *built* SDK** (`baseDist/` and `dist/`), not the source. After editing `base/` or `package/`, run `make baseDist dist` before checking the consumers.

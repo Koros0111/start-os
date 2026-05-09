@@ -4,6 +4,17 @@ This guide covers developing the SDK itself. If you're building a service packag
 
 For contributing to the broader StartOS project, see the root [CONTRIBUTING.md](../CONTRIBUTING.md).
 
+## Documentation
+
+This sub-tree's docs split across four files:
+
+- `README.md` — what this is
+- `ARCHITECTURE.md` — how it's built
+- `CONTRIBUTING.md` — this file; how to contribute
+- `CLAUDE.md` — AI-developer operating rules
+
+**These docs must be kept up to date.** When you change the SDK's structure, conventions, build process, or product surface, update the relevant file(s) in the same change — do not defer.
+
 ## Prerequisites
 
 - **Node.js v22+** (via [nvm](https://github.com/nvm-sh/nvm) recommended)

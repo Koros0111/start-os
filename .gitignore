@@ -22,6 +22,7 @@ secrets.db
 tmp
 web/.i18n-checked
 docs/USER.md
+CLAUDE.local.md
 *.s9pk
 /build/lib/migration-images
 .claude/*

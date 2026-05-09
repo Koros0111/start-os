@@ -2,11 +2,20 @@
 
 This guide is for contributing to the StartOS. If you are interested in packaging a service for StartOS, visit the [service packaging guide](https://github.com/Start9Labs/ai-service-packaging). If you are interested in promoting, providing technical support, creating tutorials, or helping in other ways, please visit the [Start9 website](https://start9.com/contribute).
 
+## Documentation
+
+This repo's docs split across four files:
+
+- `README.md` — what this is
+- `ARCHITECTURE.md` — how it's built
+- `CONTRIBUTING.md` — this file; how to contribute
+- `CLAUDE.md` — AI-developer operating rules
+
+**These docs must be kept up to date.** When you change project structure, conventions, build process, or product context, update the relevant file(s) in the same change — do not defer. Sub-trees may have their own copies when they have distinct conventions, build steps, or test surfaces.
+
 ## Collaboration
 
 - [Matrix](https://matrix.to/#/#dev-startos:matrix.start9labs.com)
-
-For project structure and system architecture, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Environment Setup
 

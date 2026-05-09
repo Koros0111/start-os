@@ -2,6 +2,17 @@
 
 For general environment setup, cloning, and build system, see the root [CONTRIBUTING.md](../CONTRIBUTING.md).
 
+## Documentation
+
+This sub-tree's docs split across four files:
+
+- `README.md` — what this is
+- `ARCHITECTURE.md` — how it's built
+- `CONTRIBUTING.md` — this file; how to contribute
+- `CLAUDE.md` — AI-developer operating rules
+
+**These docs must be kept up to date.** When you change project structure, conventions, build process, or product context, update the relevant file(s) in the same change — do not defer.
+
 ## Prerequisites
 
 - [Rust](https://rustup.rs) (nightly for formatting)

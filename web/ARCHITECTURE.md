@@ -96,3 +96,13 @@ Services often extend `Observable` and expose reactive streams via DI:
 - **`AuthService`** — Tracks `isVerified$`, triggers PatchDB start/stop
 - **`PatchMonitorService`** — Starts/stops PatchDB based on auth state
 - **`PatchDataService`** — Watches entire DB, updates localStorage bootstrap
+
+## Component Conventions
+
+- **Standalone components** preferred (no NgModule). Use `imports` array in `@Component`.
+- **`export default class`** for route components (enables direct `loadComponent` import).
+- **`inject()`** function for DI (not constructor injection).
+- **`signal()`** and **`computed()`** for local reactive state.
+- **`toSignal()`** to convert Observables (e.g., PatchDB watches) to signals.
+- **`ChangeDetectionStrategy.OnPush`** on almost all components.
+- **`takeUntilDestroyed(inject(DestroyRef))`** for subscription cleanup.
