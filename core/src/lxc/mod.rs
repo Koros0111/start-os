@@ -40,6 +40,13 @@ pub const CONTAINER_RPC_SERVER_SOCKET: &str = "service.sock"; // must not be abs
 pub const HOST_RPC_SERVER_SOCKET: &str = "host.sock"; // must not be absolute path
 const CONTAINER_DHCP_TIMEOUT: Duration = Duration::from_secs(30);
 const HARDWARE_ACCELERATION_PATHS: &[&str] = &["/dev/dri", "/dev/nvidia*", "/dev/kfd"];
+// Devices needed by rootless OCI engines (podman/docker) running inside a
+// service that opted in via `manifest.nestedRuntime`:
+//  - /dev/fuse:    fuse-overlayfs storage (the only viable rootless storage
+//                  driver inside a userns LXC; kernel overlayfs-on-overlayfs
+//                  is denied for unprivileged users).
+//  - /dev/net/tun: slirp4netns / pasta networking for nested containers.
+const NESTED_RUNTIME_PATHS: &[&str] = &["/dev/fuse", "/dev/net/tun"];
 
 #[derive(
     Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq, PartialOrd, Ord, Hash, TS,
@@ -298,6 +305,15 @@ impl LxcContainer {
                     .await
                     .with_ctx(|_| (ErrorKind::Filesystem, "readdir /dev"))?,
                 HARDWARE_ACCELERATION_PATHS,
+            )
+            .await?;
+        }
+        if res.config.nested_runtime {
+            res.handle_devices(
+                tokio::fs::read_dir("/dev")
+                    .await
+                    .with_ctx(|_| (ErrorKind::Filesystem, "readdir /dev"))?,
+                NESTED_RUNTIME_PATHS,
             )
             .await?;
         }
@@ -643,6 +659,7 @@ impl Drop for LxcContainer {
 #[derive(Default, Serialize)]
 pub struct LxcConfig {
     pub hardware_acceleration: bool,
+    pub nested_runtime: bool,
 }
 
 pub async fn connect(ctx: &RpcContext, container: &LxcContainer) -> Result<Guid, Error> {

@@ -262,6 +262,7 @@ export namespace Mock {
       ram: null,
     },
     hardwareAcceleration: false,
+    nestedRuntime: false,
     plugins: [],
   }
 
@@ -322,6 +323,7 @@ export namespace Mock {
       ram: null,
     },
     hardwareAcceleration: false,
+    nestedRuntime: false,
     plugins: [],
   }
 
@@ -369,6 +371,7 @@ export namespace Mock {
       ram: null,
     },
     hardwareAcceleration: false,
+    nestedRuntime: false,
     plugins: ['url-v0'],
   }
 
@@ -422,6 +425,7 @@ export namespace Mock {
       ram: null,
     },
     hardwareAcceleration: false,
+    nestedRuntime: false,
     plugins: [],
   }
 
@@ -483,6 +487,7 @@ export namespace Mock {
               ],
             ],
             hardwareAcceleration: false,
+            nestedRuntime: false,
             plugins: [],
           },
           '#knots:26.1.20240325:0': {
@@ -526,6 +531,7 @@ export namespace Mock {
               ],
             ],
             hardwareAcceleration: false,
+            nestedRuntime: false,
             plugins: [],
           },
         },
@@ -579,6 +585,7 @@ export namespace Mock {
               ],
             ],
             hardwareAcceleration: false,
+            nestedRuntime: false,
             plugins: [],
           },
           '#knots:26.1.20240325:0': {
@@ -622,6 +629,7 @@ export namespace Mock {
               ],
             ],
             hardwareAcceleration: false,
+            nestedRuntime: false,
             plugins: [],
           },
         },
@@ -680,6 +688,7 @@ export namespace Mock {
               ],
             ],
             hardwareAcceleration: false,
+            nestedRuntime: false,
             plugins: [],
           },
         },
@@ -736,6 +745,7 @@ export namespace Mock {
               ],
             ],
             hardwareAcceleration: false,
+            nestedRuntime: false,
             plugins: [],
           },
         },
@@ -793,6 +803,7 @@ export namespace Mock {
               ],
             ],
             hardwareAcceleration: false,
+            nestedRuntime: false,
             plugins: [],
           },
         },
@@ -908,6 +919,7 @@ For the full changelog, see https://github.com/bitcoin/bitcoin/blob/v27.0.0/doc/
             ],
           ],
           hardwareAcceleration: false,
+          nestedRuntime: false,
           plugins: [],
         },
         '#knots:27.1.0:0': {
@@ -951,6 +963,7 @@ For the full changelog, see https://github.com/bitcoin/bitcoin/blob/v27.0.0/doc/
             ],
           ],
           hardwareAcceleration: false,
+          nestedRuntime: false,
           plugins: [],
         },
       },
@@ -1007,6 +1020,7 @@ For the full changelog, see https://github.com/bitcoin/bitcoin/blob/v27.0.0/doc/
             ],
           ],
           hardwareAcceleration: false,
+          nestedRuntime: false,
           plugins: [],
         },
       },
@@ -1062,6 +1076,7 @@ For the full changelog, see https://github.com/bitcoin/bitcoin/blob/v27.0.0/doc/
             ],
           ],
           hardwareAcceleration: false,
+          nestedRuntime: false,
           plugins: [],
         },
         '#test:0.5.0:0': {
@@ -1104,6 +1119,7 @@ For the full changelog, see https://github.com/bitcoin/bitcoin/blob/v27.0.0/doc/
             ],
           ],
           hardwareAcceleration: false,
+          nestedRuntime: false,
           plugins: [],
         },
       },
