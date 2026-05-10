@@ -1,9 +1,12 @@
 use std::any::Any;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::net::{IpAddr, SocketAddr, SocketAddrV6};
+use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::task::{Poll, ready};
+use std::time::Instant;
 
 use async_acme::acme::ACME_TLS_ALPN_NAME;
 use clap::Parser;
@@ -14,8 +17,10 @@ use imbl::OrdMap;
 use imbl_value::{InOMap, InternedString};
 use rpc_toolkit::{Context, HandlerArgs, HandlerExt, ParentHandler, from_fn, from_fn_async};
 use serde::{Deserialize, Serialize};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsConnector;
+use tokio_util::sync::CancellationToken;
 use tokio_rustls::rustls::crypto::CryptoProvider;
 use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_rustls::rustls::server::ClientHello;
@@ -42,7 +47,8 @@ use crate::net::utils::{bind_mio_listener, ipv6_is_link_local, is_private_ip};
 use crate::net::web_server::{Accept, AcceptStream, ExtractVisitor, TcpMetadata, extract};
 use crate::prelude::*;
 use crate::util::collections::EqSet;
-use crate::util::future::{NonDetachingJoinHandle, WeakFuture};
+use crate::util::future::NonDetachingJoinHandle;
+use crate::util::io::ReadWriter;
 use crate::util::serde::{HandlerExtSerde, MaybeUtf8String, display_serializable};
 use crate::util::sync::{SyncMutex, Watch};
 use crate::{GatewayId, ResultExt};
@@ -246,6 +252,7 @@ pub struct VHostController {
     crypto_provider: Arc<CryptoProvider>,
     acme_cache: AcmeTlsAlpnCache,
     branding: CertBranding,
+    max_proxy_conns_per_target: usize,
     servers: SyncMutex<BTreeMap<u16, VHostServer<VHostBindListener>>>,
     passthrough_handles: SyncMutex<BTreeMap<(InternedString, u16), PassthroughHandle>>,
 }
@@ -256,6 +263,7 @@ impl VHostController {
         crypto_provider: Arc<CryptoProvider>,
         branding: CertBranding,
         passthroughs: Vec<PassthroughInfo>,
+        max_proxy_conns_per_target: usize,
     ) -> Self {
         let controller = Self {
             db,
@@ -263,6 +271,7 @@ impl VHostController {
             crypto_provider,
             acme_cache: Arc::new(SyncMutex::new(BTreeMap::new())),
             branding,
+            max_proxy_conns_per_target,
             servers: SyncMutex::new(BTreeMap::new()),
             passthrough_handles: SyncMutex::new(BTreeMap::new()),
         };
@@ -292,7 +301,7 @@ impl VHostController {
             } else {
                 self.create_server(external)
             };
-            let rc = server.add(hostname, target);
+            let rc = server.add(hostname, target, self.max_proxy_conns_per_target);
             writable.insert(external, server);
             Ok(rc?)
         })
@@ -383,7 +392,7 @@ impl VHostController {
                                     (
                                         JsonKey::new(k.clone()),
                                         v.iter()
-                                            .filter(|(_, v)| v.strong_count() > 0)
+                                            .filter(|(_, e)| e.alive())
                                             .map(|(k, _)| format!("{k:#?}"))
                                             .collect(),
                                     )
@@ -419,8 +428,8 @@ pub struct VHostBindRequirements {
 fn compute_bind_reqs<A: Accept + 'static>(mapping: &Mapping<A>) -> VHostBindRequirements {
     let mut reqs = VHostBindRequirements::default();
     for (_, targets) in mapping {
-        for (target, rc) in targets {
-            if rc.strong_count() > 0 {
+        for (target, entry) in targets {
+            if entry.alive() {
                 let (pub_gw, priv_ip) = target.0.bind_requirements();
                 reqs.public_gateways.extend(pub_gw);
                 reqs.private_ips.extend(priv_ip);
@@ -575,7 +584,7 @@ pub trait VHostTarget<A: Accept>: std::fmt::Debug + Eq {
         stream: AcceptStream,
         metadata: TlsMetadata<<A as Accept>::Metadata>,
         prev: Self::PreprocessRes,
-        rc: Weak<()>,
+        ctx: ProxyContext,
     );
 }
 
@@ -597,7 +606,7 @@ pub trait DynVHostTargetT<A: Accept>: std::fmt::Debug + Any {
         stream: AcceptStream,
         metadata: TlsMetadata<<A as Accept>::Metadata>,
         prev: Box<dyn Any + Send>,
-        rc: Weak<()>,
+        ctx: ProxyContext,
     );
     fn eq(&self, other: &dyn DynVHostTargetT<A>) -> bool;
 }
@@ -629,10 +638,10 @@ impl<A: Accept, T: VHostTarget<A> + 'static> DynVHostTargetT<A> for T {
         stream: AcceptStream,
         metadata: TlsMetadata<<A as Accept>::Metadata>,
         prev: Box<dyn Any + Send>,
-        rc: Weak<()>,
+        ctx: ProxyContext,
     ) {
         if let Ok(prev) = prev.downcast() {
-            VHostTarget::handle_stream(self, stream, metadata, *prev, rc);
+            VHostTarget::handle_stream(self, stream, metadata, *prev, ctx);
         }
     }
     fn eq(&self, other: &dyn DynVHostTargetT<A>) -> bool {
@@ -662,7 +671,7 @@ impl<A: Accept + 'static> PartialEq for DynVHostTarget<A> {
     }
 }
 impl<A: Accept + 'static> Eq for DynVHostTarget<A> {}
-struct Preprocessed<A: Accept>(DynVHostTarget<A>, Weak<()>, Box<dyn Any + Send>);
+struct Preprocessed<A: Accept>(DynVHostTarget<A>, ProxyContext, Box<dyn Any + Send>);
 impl<A: Accept> fmt::Debug for Preprocessed<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         (self.0).0.fmt(f)
@@ -671,7 +680,7 @@ impl<A: Accept> fmt::Debug for Preprocessed<A> {
 impl<A: Accept + 'static> DynVHostTarget<A> {
     async fn into_preprocessed(
         self,
-        rc: Weak<()>,
+        ctx: ProxyContext,
         prev: ServerConfig,
         hello: &ClientHello<'_>,
         metadata: &<A as Accept>::Metadata,
@@ -680,7 +689,7 @@ impl<A: Accept + 'static> DynVHostTarget<A> {
         <A as Accept>::Metadata: Visit<ExtractVisitor<TcpMetadata>>,
     {
         let (cfg, res) = self.0.preprocess(prev, hello, metadata).await?;
-        Some((cfg, Preprocessed(self, rc, res)))
+        Some((cfg, Preprocessed(self, ctx, res)))
     }
 }
 impl<A: Accept + 'static> Preprocessed<A> {
@@ -820,10 +829,10 @@ where
     }
     fn handle_stream(
         &self,
-        mut stream: AcceptStream,
+        stream: AcceptStream,
         metadata: TlsMetadata<<A as Accept>::Metadata>,
         mut prev: Self::PreprocessRes,
-        rc: Weak<()>,
+        ctx: ProxyContext,
     ) {
         let add_x_forwarded_headers = self.add_x_forwarded_headers;
         // Pre-compile the auth gate once per stream — base64-encode all
@@ -846,8 +855,13 @@ where
             None => None,
         };
         let http_aware = add_x_forwarded_headers || auth_gate.is_some();
+        let (mut stream, registration, conn_cancel) = ctx.track_with(stream);
+        let target_cancel = ctx.cancel.clone();
         tokio::spawn(async move {
-            WeakFuture::new(rc, async move {
+            // Force capture by the outer `async move`; without a reference
+            // here the registry entry would deregister immediately.
+            let _registration = registration;
+            let work = async move {
                 if http_aware {
                     crate::net::http::run_http_proxy(
                         stream,
@@ -860,21 +874,197 @@ where
                     .await
                     .ok();
                 } else {
-                    // copy_bidirectional drains each direction to EOF, then
-                    // half-closes the destination (flush + FIN). It won't
-                    // return until both directions have settled. Without a
-                    // per-connection escape hatch that would normally risk
-                    // leaking if one peer stayed idle forever — but both
-                    // TCP sockets have tuned SO_KEEPALIVE (default_keepalive)
-                    // so a silent peer errors out within ~2 min, bounding
-                    // the hang without losing in-flight bytes.
                     tokio::io::copy_bidirectional(&mut stream, &mut prev)
                         .await
                         .ok();
                 }
-            })
-            .await
+            };
+            tokio::select! {
+                _ = target_cancel.cancelled() => {}
+                _ = conn_cancel.cancelled() => {}
+                _ = work => {}
+            }
         });
+    }
+}
+
+pub const MAX_PROXY_CONNS_PER_TARGET: usize = 4096;
+
+fn monotonic_millis() -> u64 {
+    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_millis() as u64
+}
+
+/// Ticks `last_active` on byte progress; never closes the stream.
+pub struct ActivityStream<S> {
+    inner: S,
+    last_active: Arc<AtomicU64>,
+}
+impl<S> ActivityStream<S> {
+    pub fn new(inner: S, last_active: Arc<AtomicU64>) -> Self {
+        last_active.store(monotonic_millis(), Ordering::Relaxed);
+        Self { inner, last_active }
+    }
+}
+impl<S: AsyncRead + Unpin> AsyncRead for ActivityStream<S> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let res = Pin::new(&mut self.inner).poll_read(cx, buf);
+        if let Poll::Ready(Ok(())) = &res {
+            if buf.filled().len() > before {
+                self.last_active
+                    .store(monotonic_millis(), Ordering::Relaxed);
+            }
+        }
+        res
+    }
+}
+impl<S: AsyncWrite + Unpin> AsyncWrite for ActivityStream<S> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let res = Pin::new(&mut self.inner).poll_write(cx, buf);
+        if let Poll::Ready(Ok(n)) = &res {
+            if *n > 0 {
+                self.last_active
+                    .store(monotonic_millis(), Ordering::Relaxed);
+            }
+        }
+        res
+    }
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        bufs: &[std::io::IoSlice<'_>],
+    ) -> Poll<std::io::Result<usize>> {
+        let res = Pin::new(&mut self.inner).poll_write_vectored(cx, bufs);
+        if let Poll::Ready(Ok(n)) = &res {
+            if *n > 0 {
+                self.last_active
+                    .store(monotonic_millis(), Ordering::Relaxed);
+            }
+        }
+        res
+    }
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
+    }
+}
+
+#[derive(Debug)]
+struct ConnEntry {
+    last_active: Arc<AtomicU64>,
+    cancel: CancellationToken,
+}
+
+/// Per-target proxy-task registry with LRU eviction at the cap.
+#[derive(Debug)]
+pub struct ConnRegistry {
+    cap: usize,
+    next_id: AtomicU64,
+    entries: SyncMutex<HashMap<u64, ConnEntry>>,
+}
+impl ConnRegistry {
+    pub fn new(cap: usize) -> Arc<Self> {
+        Arc::new(Self {
+            cap,
+            next_id: AtomicU64::new(0),
+            entries: SyncMutex::new(HashMap::new()),
+        })
+    }
+    fn register(
+        self: &Arc<Self>,
+        last_active: Arc<AtomicU64>,
+        cancel: CancellationToken,
+    ) -> ConnRegHandle {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.entries.mutate(|m| {
+            if m.len() >= self.cap {
+                if let Some((victim_id, victim)) = m
+                    .iter()
+                    .min_by_key(|(_, e)| e.last_active.load(Ordering::Relaxed))
+                    .map(|(k, e)| (*k, e.cancel.clone()))
+                {
+                    victim.cancel();
+                    m.remove(&victim_id);
+                }
+            }
+            m.insert(id, ConnEntry { last_active, cancel });
+        });
+        ConnRegHandle {
+            id,
+            registry: Arc::downgrade(self),
+        }
+    }
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.entries.peek(|m| m.len())
+    }
+}
+
+struct ConnRegHandle {
+    id: u64,
+    registry: Weak<ConnRegistry>,
+}
+impl Drop for ConnRegHandle {
+    fn drop(&mut self) {
+        if let Some(r) = self.registry.upgrade() {
+            r.entries.mutate(|m| {
+                m.remove(&self.id);
+            });
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ProxyContext {
+    pub cancel: CancellationToken,
+    pub registry: Arc<ConnRegistry>,
+}
+impl ProxyContext {
+    fn new(max_conns: usize) -> Self {
+        Self {
+            cancel: CancellationToken::new(),
+            registry: ConnRegistry::new(max_conns),
+        }
+    }
+    pub fn track<S>(&self, stream: S) -> (ActivityStream<S>, ConnRegHandle) {
+        let last_active = Arc::new(AtomicU64::new(monotonic_millis()));
+        let handle = self
+            .registry
+            .register(last_active.clone(), self.cancel.child_token());
+        (ActivityStream::new(stream, last_active), handle)
+    }
+    pub fn track_with(
+        &self,
+        stream: AcceptStream,
+    ) -> (AcceptStream, ConnRegHandle, CancellationToken) {
+        let last_active = Arc::new(AtomicU64::new(monotonic_millis()));
+        let conn_cancel = self.cancel.child_token();
+        let handle = self
+            .registry
+            .register(last_active.clone(), conn_cancel.clone());
+        let wrapped: Pin<Box<dyn ReadWriter + Send + 'static>> =
+            Box::pin(ActivityStream::new(stream, last_active));
+        (wrapped, handle, conn_cancel)
     }
 }
 
@@ -891,7 +1081,34 @@ impl Default for AlpnInfo {
     }
 }
 
-type Mapping<A> = BTreeMap<Option<InternedString>, InOMap<DynVHostTarget<A>, Weak<()>>>;
+#[derive(Debug, Clone)]
+struct TargetEntry {
+    rc: Weak<()>,
+    ctx: ProxyContext,
+}
+impl TargetEntry {
+    fn new(rc: Weak<()>, max_conns: usize) -> Self {
+        Self {
+            rc,
+            ctx: ProxyContext::new(max_conns),
+        }
+    }
+    fn alive(&self) -> bool {
+        self.rc.strong_count() > 0
+    }
+}
+
+fn cancel_dead<A: Accept + 'static>(targets: &mut InOMap<DynVHostTarget<A>, TargetEntry>) {
+    targets.retain(|_, e| {
+        let alive = e.alive();
+        if !alive {
+            e.ctx.cancel.cancel();
+        }
+        alive
+    });
+}
+
+type Mapping<A> = BTreeMap<Option<InternedString>, InOMap<DynVHostTarget<A>, TargetEntry>>;
 
 pub struct GetVHostAcmeProvider<A: Accept + 'static>(pub Watch<Mapping<A>>);
 impl<A: Accept + 'static> Clone for GetVHostAcmeProvider<A> {
@@ -915,7 +1132,7 @@ impl<A: Accept + 'static> GetAcmeProvider for GetVHostAcmeProvider<A> {
                     let (t, _) = m
                         .get(&Some(x.clone()))?
                         .iter()
-                        .find(|(_, rc)| rc.strong_count() > 0)?;
+                        .find(|(_, e)| e.alive())?;
                     let acme = t.0.acme()?;
                     Some(if let Some(acc) = acc {
                         if acme == acc {
@@ -1009,9 +1226,9 @@ where
                 .or_else(|| m.get(&None))
                 .into_iter()
                 .flatten()
-                .filter(|(_, rc)| rc.strong_count() > 0)
+                .filter(|(_, e)| e.alive())
                 .find(|(t, _)| t.0.filter(metadata))
-                .map(|(t, rc)| (t.clone(), rc.clone()))
+                .map(|(t, e)| (t.clone(), e.ctx.clone()))
         });
 
         let acme_alpn = hello
@@ -1022,11 +1239,11 @@ where
 
         // Passthroughs should not intermediate ACME challenges — the
         // backend is the ACME client and holds the challenge cert.
-        if let Some((target, rc)) = routed.as_ref().filter(|(t, _)| t.0.is_passthrough()) {
+        if let Some((target, ctx)) = routed.as_ref().filter(|(t, _)| t.0.is_passthrough()) {
             let stub = passthrough_stub_config(&self.crypto_provider).log_err()?;
             let (_, store) = target
                 .clone()
-                .into_preprocessed(rc.clone(), stub, hello, metadata)
+                .into_preprocessed(ctx.clone(), stub, hello, metadata)
                 .await?;
             self.preprocessed = Some(store);
             return Some(TlsHandlerAction::Passthrough);
@@ -1038,7 +1255,7 @@ where
             return self.inner.get_config(hello, metadata).await;
         }
 
-        let Some((target, rc)) = routed else {
+        let Some((target, ctx)) = routed else {
             return None;
         };
 
@@ -1047,7 +1264,7 @@ where
             TlsHandlerAction::Tls(cfg) => cfg,
             other => return Some(other),
         };
-        let (prev, store) = target.into_preprocessed(rc, cfg, hello, metadata).await?;
+        let (prev, store) = target.into_preprocessed(ctx, cfg, hello, metadata).await?;
         self.preprocessed = Some(store);
         Some(TlsHandlerAction::Tls(prev))
     }
@@ -1226,20 +1443,46 @@ impl<A: Accept> VHostServer<A> {
         &self,
         hostname: Option<InternedString>,
         target: DynVHostTarget<A>,
+        max_proxy_conns_per_target: usize,
     ) -> Result<Arc<()>, Error> {
         let target = target.into();
         let mut res = Ok(Arc::new(()));
         self.mapping.send_if_modified(|writable| {
             let mut changed = false;
             let mut targets = writable.remove(&hostname).unwrap_or_default();
-            let rc = if let Some(rc) = Weak::upgrade(&targets.remove(&target).unwrap_or_default()) {
-                rc
-            } else {
-                changed = true;
-                Arc::new(())
+            // Reuse the existing ctx on re-add so in-flight tasks keep
+            // their lifecycle; cancel a stale ctx before replacing it.
+            let existing = targets.remove(&target);
+            let (rc, entry) = match existing {
+                Some(e) => match e.rc.upgrade() {
+                    Some(rc) => (
+                        rc.clone(),
+                        TargetEntry {
+                            rc: Arc::downgrade(&rc),
+                            ctx: e.ctx,
+                        },
+                    ),
+                    None => {
+                        e.ctx.cancel.cancel();
+                        changed = true;
+                        let rc = Arc::new(());
+                        (
+                            rc.clone(),
+                            TargetEntry::new(Arc::downgrade(&rc), max_proxy_conns_per_target),
+                        )
+                    }
+                },
+                None => {
+                    changed = true;
+                    let rc = Arc::new(());
+                    (
+                        rc.clone(),
+                        TargetEntry::new(Arc::downgrade(&rc), max_proxy_conns_per_target),
+                    )
+                }
             };
-            targets.retain(|_, rc| rc.strong_count() > 0);
-            targets.insert(target, Arc::downgrade(&rc));
+            cancel_dead(&mut targets);
+            targets.insert(target, entry);
             writable.insert(hostname, targets);
             res = Ok(rc);
             if changed {
@@ -1260,10 +1503,7 @@ impl<A: Accept> VHostServer<A> {
         self.mapping.send_if_modified(|writable| {
             let mut targets = writable.remove(&hostname).unwrap_or_default();
             let pre = targets.len();
-            targets = targets
-                .into_iter()
-                .filter(|(_, rc)| rc.strong_count() > 0)
-                .collect();
+            cancel_dead(&mut targets);
             let post = targets.len();
             if !targets.is_empty() {
                 writable.insert(hostname, targets);
@@ -1326,4 +1566,102 @@ async fn copy_bidirectional_hangs_without_keepalive_when_peer_idle() {
     );
 
     proxy.abort();
+}
+
+#[cfg(test)]
+mod conn_cap_tests {
+    use std::time::Duration;
+
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn lru_eviction_cancels_only_the_oldest() {
+        let registry = ConnRegistry::new(2);
+
+        let cancel1 = CancellationToken::new();
+        let _h1 = registry.register(Arc::new(AtomicU64::new(100)), cancel1.clone());
+        let cancel2 = CancellationToken::new();
+        let _h2 = registry.register(Arc::new(AtomicU64::new(200)), cancel2.clone());
+        let cancel3 = CancellationToken::new();
+        let _h3 = registry.register(Arc::new(AtomicU64::new(300)), cancel3.clone());
+
+        assert!(cancel1.is_cancelled());
+        assert!(!cancel2.is_cancelled());
+        assert!(!cancel3.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn activity_stream_keeps_busy_conn_out_of_lru_seat() {
+        let registry = ConnRegistry::new(2);
+
+        let stale_cancel = CancellationToken::new();
+        let _stale = registry.register(
+            Arc::new(AtomicU64::new(monotonic_millis())),
+            stale_cancel.clone(),
+        );
+
+        let busy_active = Arc::new(AtomicU64::new(monotonic_millis()));
+        let busy_cancel = CancellationToken::new();
+        let _busy = registry.register(busy_active.clone(), busy_cancel.clone());
+
+        let (a, mut b) = tokio::io::duplex(64);
+        let mut wrapped = ActivityStream::new(a, busy_active.clone());
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        b.write_all(b"hello").await.unwrap();
+        let mut buf = [0u8; 5];
+        wrapped.read_exact(&mut buf).await.unwrap();
+
+        let new_cancel = CancellationToken::new();
+        let _new = registry.register(
+            Arc::new(AtomicU64::new(monotonic_millis())),
+            new_cancel.clone(),
+        );
+
+        assert!(stale_cancel.is_cancelled());
+        assert!(!busy_cancel.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn drop_handle_deregisters() {
+        let registry = ConnRegistry::new(8);
+        {
+            let _h = registry.register(
+                Arc::new(AtomicU64::new(monotonic_millis())),
+                CancellationToken::new(),
+            );
+            assert_eq!(registry.len(), 1);
+        }
+        assert_eq!(registry.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn target_cancel_wakes_idle_proxy_task() {
+        let ctx = ProxyContext::new(MAX_PROXY_CONNS_PER_TARGET);
+        let (mut a, _a_peer) = tokio::io::duplex(64);
+        let (mut b, _b_peer) = tokio::io::duplex(64);
+        let target_cancel = ctx.cancel.clone();
+        let conn_cancel = ctx.cancel.child_token();
+
+        let mut proxy = tokio::spawn(async move {
+            tokio::select! {
+                _ = target_cancel.cancelled() => "target",
+                _ = conn_cancel.cancelled() => "conn",
+                _ = tokio::io::copy_bidirectional(&mut a, &mut b) => "io",
+            }
+        });
+
+        let early = tokio::time::timeout(Duration::from_millis(50), &mut proxy).await;
+        assert!(early.is_err());
+
+        ctx.cancel.cancel();
+
+        // conn_cancel is a child of target_cancel, so either branch winning
+        // is correct — what we're asserting is that "io" doesn't win.
+        let outcome = tokio::time::timeout(Duration::from_millis(200), &mut proxy)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(outcome == "target" || outcome == "conn", "got {outcome}");
+    }
 }

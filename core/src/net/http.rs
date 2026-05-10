@@ -332,8 +332,11 @@ where
         .handshake(TokioIo::new(to))
         .await?;
     let client = Arc::new(Mutex::new(client));
+    // hyper disarms `header_read_timeout` while a body or upgrade is in
+    // flight, so this can't kill an active stream — only idle keep-alive.
     let from = hyper::server::conn::http1::Builder::new()
         .timer(TokioTimer::new())
+        .header_read_timeout(Duration::from_secs(60))
         .serve_connection(
             TokioIo::new(from),
             service_fn(move |mut req| {
