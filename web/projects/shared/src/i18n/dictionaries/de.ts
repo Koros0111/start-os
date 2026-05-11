@@ -751,4 +751,6 @@ export default {
   836: 'Aus',
   837: 'An',
   838: 'Keine kompatible Version verfügbar',
+  839: 'Anleitung',
+  840: 'Diese Version enthält keine Anweisungen. Bitte aktualisieren.',
 } satisfies i18n
