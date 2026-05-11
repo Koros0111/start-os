@@ -5,6 +5,7 @@ import {
   SetMainStatus,
   DependencyRequirement,
   CheckDependenciesResult,
+  CreateNotificationParams,
   SetHealth,
   BindParams,
   HostId,
@@ -95,6 +96,19 @@ export type Effects = {
   // health
   /** sets the result of a health check */
   setHealth(o: SetHealth): Promise<null>
+
+  // notification
+  notification: {
+    /**
+     * Create a notification attributed to this service.
+     *
+     * Omit `data` for a plain notification (panel row shows `title` and
+     * `message` only). Pass `data` as markdown text to attach a long-form
+     * body that the UI renders in a "View Details" modal (release notes,
+     * post-update changelogs, structured error reports).
+     */
+    create(options: CreateNotificationParams): Promise<null>
+  }
 
   // subcontainer
   subcontainer: {

@@ -122,7 +122,12 @@ export class StartSdk<Manifest extends T.SDKManifest> {
    * @returns An object containing all SDK utilities: actions, daemons, backups, interfaces, health checks, volumes, triggers, and more.
    */
   build(isReady: AnyNeverCond<[Manifest], 'Build not ready', true>) {
-    type NestedEffects = 'subcontainer' | 'store' | 'action' | 'plugin'
+    type NestedEffects =
+      | 'subcontainer'
+      | 'store'
+      | 'action'
+      | 'plugin'
+      | 'notification'
     type InterfaceEffects =
       | 'getServiceInterface'
       | 'listServiceInterfaces'
@@ -218,6 +223,50 @@ export class StartSdk<Manifest extends T.SDKManifest> {
          */
         clearTask: (effects: T.Effects, ...replayIds: string[]) =>
           effects.action.clearTasks({ only: replayIds }),
+      },
+      notification: {
+        /**
+         * @description Create a notification attributed to this service. The
+         *   notification appears in the StartOS notifications panel just like
+         *   the ones StartOS itself generates (e.g. on backup completion).
+         *
+         *   Omit `data` for a plain notification — the panel row shows
+         *   `title` and `message` only.
+         *
+         *   Pass `data` as markdown text to attach a long-form body. The
+         *   panel row still shows `title` and `message`; clicking
+         *   "View Details" opens `data` rendered as markdown in a large
+         *   modal. Use this for release notes, post-update changelogs,
+         *   structured error reports — long-form content, not a short
+         *   status string.
+         * @example
+         * ```
+         *   await sdk.notification.create(effects, {
+         *     level: 'info',
+         *     title: 'Sync Complete',
+         *     message: 'Initial block download finished.',
+         *   })
+         * ```
+         * @example
+         * ```
+         *   await sdk.notification.create(effects, {
+         *     level: 'success',
+         *     title: 'Update Complete',
+         *     message: 'Hello World was updated to 2.0.0. Tap for release notes.',
+         *     data: [
+         *       '## What\'s new in 2.0.0',
+         *       '',
+         *       '- Faster sync on slow networks',
+         *       '- New `--verbose` flag for the daemon',
+         *       '- Fixed a crash on startup when the data volume was empty',
+         *       '',
+         *       'See the full changelog at https://example.com/changelog.',
+         *     ].join('\n'),
+         *   })
+         * ```
+         */
+        create: (effects: T.Effects, options: T.CreateNotificationParams) =>
+          effects.notification.create(options),
       },
       /**
        * Check whether the specified (or all) dependencies are satisfied.
