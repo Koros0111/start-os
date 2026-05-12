@@ -463,6 +463,7 @@ fn is_valid_domain(domain: &str) -> bool {
 
 pub async fn init_web(ctx: CliContext) -> Result<(), Error> {
     let mut password = None;
+    let mut cert_generated = false;
     loop {
         match ctx
             .call_remote::<TunnelContext>("web.enable", json!({}))
@@ -475,14 +476,16 @@ pub async fn init_web(ctx: CliContext) -> Result<(), Error> {
                 )?;
 
                 println!("✅ Success! ✅");
-                println!(
-                    "StartTunnel installed successfully. Below is your Web URL{} and Root Certificate Authority (Root CA).",
-                    if password.is_some() {
-                        ", password,"
-                    } else {
-                        ""
+                print!("StartTunnel installed successfully. Below is your Web URL");
+                match (password.is_some(), cert_generated) {
+                    (true, true) => {
+                        print!(", password, and Root Certificate Authority (Root CA)")
                     }
-                );
+                    (true, false) => print!(" and password"),
+                    (false, true) => print!(" and Root Certificate Authority (Root CA)"),
+                    (false, false) => {}
+                }
+                println!(".");
                 println!();
                 println!("🌐 Web URL");
                 println!("https://{listen}");
@@ -518,19 +521,21 @@ pub async fn init_web(ctx: CliContext) -> Result<(), Error> {
                 }
                 println!();
 
-                let cert = from_value::<Pem<Vec<X509>>>(
-                    ctx.call_remote::<TunnelContext>("web.get-certificate", json!({}))
-                        .await?,
-                )?
-                .0
-                .pop()
-                .map(Pem)
-                .or_not_found("certificate in chain")?;
-                println!("📝 Root CA:");
-                print!("{cert}\n");
-                println!(
-                    "Follow instructions to trust your Root CA (recommended): https://docs.start9.com/start-tunnel/installing.html#trust-your-root-ca"
-                );
+                if cert_generated {
+                    let cert = from_value::<Pem<Vec<X509>>>(
+                        ctx.call_remote::<TunnelContext>("web.get-certificate", json!({}))
+                            .await?,
+                    )?
+                    .0
+                    .pop()
+                    .map(Pem)
+                    .or_not_found("certificate in chain")?;
+                    println!("📝 Root CA:");
+                    print!("{cert}\n");
+                    println!(
+                        "Follow instructions to trust your Root CA (recommended): https://docs.start9.com/start-tunnel/installing.html#certificate-options"
+                    );
+                }
 
                 return Ok(());
             }
@@ -642,6 +647,7 @@ pub async fn init_web(ctx: CliContext) -> Result<(), Error> {
                             to_value(&GenerateCertParams { subject: san_info })?,
                         )
                         .await?;
+                        cert_generated = true;
                     }
                     Choice::Provide => {
                         import_certificate_cli(HandlerArgs {
