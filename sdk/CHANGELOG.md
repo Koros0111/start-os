@@ -1,18 +1,22 @@
 # Changelog
 
-## 1.5.1 — StartOS 0.4.0-beta.8 (2026-05-13)
+## 1.5.1 — StartOS 0.4.0-beta.9 (2026-05-13)
 
 ### Fixed
 
 - `GetActionInputType` (used to infer the input shape for `TaskOptions` / `task()` partials) now matches against `ActionInfo` instead of `Action`. The conditional previously tested `A extends Action<...>` while `A` was constrained to `ActionInfo<...>`, so inference fell through to `never` and `TaskInput.value` collapsed to `DeepPartial<never>`. Tasks built from `ActionInfo` now infer their input type correctly
 - `BindOptions.addSsl` is now `Partial<AddSslOptions>` for protocols without SSL variants, matching the type already used on the SSL-variant branch. The two branches of the discriminated union are now consistent, so callers can omit individual SSL option fields regardless of which protocol they're binding
 
-## 1.5.0 — StartOS 0.4.0-beta.8 (2026-05-08)
+## 1.5.0 — StartOS 0.4.0-beta.9 (2026-05-08)
 
 ### Added
 
 - `sdk.notification.create(effects, options)` lets a package post a notification into the StartOS notifications panel, alongside the ones StartOS itself generates (e.g. on backup completion). `options` is `{ level, title, message, data? }`: omit `data` for a plain notification (panel row only) or pass markdown text for `data` to attach a long-form body the UI renders in a "View Details" modal (release notes, post-update changelogs, structured error reports). The host forces `packageId` to the calling service's id, so a package can't spoof another package
-- Backed by a new effect `effects.notification.create(...)` (requires StartOS 0.4.0-beta.8 with the matching backend handler)
+- Backed by a new effect `effects.notification.create(...)` (requires StartOS 0.4.0-beta.9 with the matching backend handler)
+
+### Changed
+
+- Minimum StartOS version bumped to `0.4.0-beta.9` — required for the `notification.create` effect added in this release
 
 ## 1.4.3 — StartOS 0.4.0-beta.8 (2026-05-07)
 
