@@ -57,6 +57,7 @@ import { HintPipe } from '../pipes/hint.pipe'
                 tuiOption
                 iconEnd="@tui.arrow-right"
                 tuiFluidTypography
+                [disabled]="disabledItemHandler(item)"
                 [routerLink]="inverted[item]?.slice(1)"
               >
                 {{ item }}
@@ -65,6 +66,7 @@ import { HintPipe } from '../pipes/hint.pipe'
               <button
                 tuiOption
                 tuiFluidTypography
+                [disabled]="disabledItemHandler(item)"
                 [style.white-space]="'nowrap'"
                 [value]="item"
               >
