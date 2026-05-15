@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.5.2 — StartOS 0.4.0-beta.9 (2026-05-15)
+
+### Fixed
+
+- `Backups.withPgDump` and `Backups.withMysqlDump` now stage the dump file in the subcontainer rootfs (`/tmp/<db>-db.dump`) and `cp` it through to the backup target, on both backup and restore. Previously `pg_dump` / `mysqldump` wrote directly to the `backup-fs` FUSE bind mount, where their writes were silently dropped — the process exited 0 but the resulting `<db>-db.dump` was 0 bytes. Every package using these helpers (immich, spliit, synapse, nextcloud, btcpayserver, mempool, ghost) has been shipping empty database dumps since the helpers were introduced; bump to this SDK and rebuild the s9pk to recover. Plain `cp` writes through the FUSE work, so staging through `/tmp` produces an identical on-disk dump file at the same path — no restore-format change
+
 ## 1.5.1 — StartOS 0.4.0-beta.9 (2026-05-13)
 
 ### Fixed

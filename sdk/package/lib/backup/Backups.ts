@@ -171,6 +171,12 @@ export class Backups<M extends T.SDKManifest> implements InitScript {
     } = config
     const pgdata = `${mountpoint}${pgdataPath}`
     const dumpFile = `${BACKUP_CONTAINER_MOUNT}/${database}-db.dump`
+    // pg_dump's writes are silently dropped on the backup-fs FUSE mount —
+    // pg_dump exits 0 but the file stays 0 bytes. `cp` writes through the
+    // FUSE correctly, so we dump to a non-FUSE path inside the subcontainer
+    // rootfs and `cp` the result through. Likewise on restore, `cp` the dump
+    // off the FUSE before pg_restore reads it.
+    const tmpDumpFile = `/tmp/${database}-db.dump`
 
     function dbMounts() {
       return Mounts.of<M>().mountVolume({
@@ -231,17 +237,19 @@ export class Backups<M extends T.SDKManifest> implements InitScript {
           async (sub) => {
             console.log('[pg-dump] mounting backup target')
             await mountBackupTarget(sub.rootfs)
-            await sub.execFail(['touch', dumpFile], { user: 'root' })
-            await sub.execFail(['chown', 'postgres:postgres', dumpFile], {
+            await sub.execFail(['touch', tmpDumpFile], { user: 'root' })
+            await sub.execFail(['chown', 'postgres:postgres', tmpDumpFile], {
               user: 'root',
             })
             await startPg(sub, 'pg-dump')
             console.log('[pg-dump] dumping database')
             await sub.execFail(
-              ['pg_dump', '-U', user, '-Fc', '-f', dumpFile, database],
+              ['pg_dump', '-U', user, '-Fc', '-f', tmpDumpFile, database],
               { user: 'postgres' },
               null,
             )
+            console.log('[pg-dump] copying dump to backup target')
+            await sub.execFail(['cp', tmpDumpFile, dumpFile], { user: 'root' })
             console.log('[pg-dump] stopping postgres')
             await sub.execFail(['pg_ctl', 'stop', '-D', pgdata, '-w'], {
               user: 'postgres',
@@ -259,6 +267,13 @@ export class Backups<M extends T.SDKManifest> implements InitScript {
           'pg-restore',
           async (sub) => {
             await mountBackupTarget(sub.rootfs)
+            // Stage the dump off the FUSE before pg_restore reads it — see
+            // the comment on `tmpDumpFile` above.
+            await sub.execFail(['cp', dumpFile, tmpDumpFile], { user: 'root' })
+            await sub.execFail(
+              ['chown', 'postgres:postgres', tmpDumpFile],
+              { user: 'root' },
+            )
             await sub.execFail(
               ['chown', '-R', 'postgres:postgres', mountpoint],
               { user: 'root' },
@@ -280,7 +295,7 @@ export class Backups<M extends T.SDKManifest> implements InitScript {
                 database,
                 '--no-owner',
                 '--no-privileges',
-                dumpFile,
+                tmpDumpFile,
               ],
               { user: 'postgres' },
               null,
@@ -334,6 +349,10 @@ export class Backups<M extends T.SDKManifest> implements InitScript {
       mysqldOptions = [],
     } = config
     const dumpFile = `${BACKUP_CONTAINER_MOUNT}/${database}-db.dump`
+    // See the comment on `tmpDumpFile` in withPgDump — backup-fs FUSE
+    // silently drops mysqldump's writes, so stage the dump in the
+    // subcontainer rootfs and `cp` through.
+    const tmpDumpFile = `/tmp/${database}-db.dump`
 
     function dbMounts() {
       return Mounts.of<M>().mountVolume({
@@ -430,12 +449,13 @@ export class Backups<M extends T.SDKManifest> implements InitScript {
                 user,
                 ...(pw !== null ? [`-p${pw}`] : []),
                 '--single-transaction',
-                `--result-file=${dumpFile}`,
+                `--result-file=${tmpDumpFile}`,
                 database,
               ],
               { user: 'root' },
               null,
             )
+            await sub.execFail(['cp', tmpDumpFile, dumpFile], { user: 'root' })
             // Graceful shutdown via SIGTERM; wait for exit
             await sub.execFail(
               [
@@ -498,12 +518,15 @@ export class Backups<M extends T.SDKManifest> implements InitScript {
             await sub.execFail(['mysql', '-u', 'root', '-e', grantSql], {
               user: 'root',
             })
+            // Stage the dump off the FUSE before mysql reads it — see
+            // the comment on `tmpDumpFile` above.
+            await sub.execFail(['cp', dumpFile, tmpDumpFile], { user: 'root' })
             // Restore from dump
             await sub.execFail(
               [
                 'sh',
                 '-c',
-                `mysql -u root ${pw !== null ? `-p'${pw}'` : ''} ${database} < ${dumpFile}`,
+                `mysql -u root ${pw !== null ? `-p'${pw}'` : ''} ${database} < ${tmpDumpFile}`,
               ],
               { user: 'root' },
               null,
