@@ -441,6 +441,14 @@ for the detail behind its highlights.
   flavors produced no answer, so a list mixing Bitcoin Core with Bitcoin Knots
   kept whatever order it arrived in.
 
+- **Marketplace, service-package and OS-update downloads fall back to IPv4
+  within a fraction of a second when a host's IPv6 does not answer.** StartOS
+  tries a host's IPv6 and IPv4 addresses a quarter of a second apart and uses
+  the first connection that succeeds.
+
+- **The OS log stays focused on actionable errors on a network whose router
+  advertises a route with more than one next hop.**
+
 ### Security
 
 - **Service mount paths are validated and confined to their intended
@@ -460,6 +468,10 @@ for the detail behind its highlights.
   so a renewal that begins failing does not take the address down, and a domain
   you also reach on your local network keeps answering there with your server's
   own certificate.
+
+- **Outbound IPv6 uses an address assigned to the selected gateway.** Traffic
+  through a gateway that has an IPv6 router but no IPv6 address of its own
+  fails immediately.
 
 ## [0.4.0.1]
 
